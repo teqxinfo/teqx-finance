@@ -1,0 +1,6 @@
+{
+  "name": "LedgerPulse - Income & Expenditure Tracker",
+  "description": "Personal income and expenditure tracking web app connected to Google Sheets REST API with real-time financial analytics, dynamic category management, and responsive dashboards.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
