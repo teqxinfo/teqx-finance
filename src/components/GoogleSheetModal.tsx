@@ -297,8 +297,8 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
 
             <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80 text-[11px] text-slate-400 space-y-1">
               <p className="font-semibold text-slate-300">Schema requirement verified:</p>
-              <p>• <span className="font-mono text-emerald-400">Transactions</span> tab: Date, Type, Category, Amount, Description</p>
-              <p>• <span className="font-mono text-emerald-400">Categories</span> tab: Col A (Income Categories), Col B (Expense Categories)</p>
+              <p>• <span className="font-mono text-emerald-400">Transactions</span> tab: Col A (Date), Col B (Type), Col C (Category - cleared), Col D (Amount), Col E (Description), Col F (Pay By), Col G (Pay from :)</p>
+              <p>• <span className="font-mono text-emerald-400">Categories</span> tab: Clean column layout</p>
             </div>
           </div>
         )}

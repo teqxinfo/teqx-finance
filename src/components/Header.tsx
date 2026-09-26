@@ -6,7 +6,8 @@ import {
   RefreshCw,
   ExternalLink,
   PlusCircle,
-  Database
+  Database,
+  CloudUpload
 } from 'lucide-react';
 import { GoogleUserProfile, SpreadsheetInfo } from '../types';
 
@@ -17,6 +18,7 @@ interface HeaderProps {
   isSyncing: boolean;
   onRefreshData: () => void;
   onOpenSheetModal: () => void;
+  onOpenUploadModal: () => void;
   onGoogleSignIn: () => void;
   onGoogleSignOut: () => void;
 }
@@ -28,6 +30,7 @@ export const Header: React.FC<HeaderProps> = ({
   isSyncing,
   onRefreshData,
   onOpenSheetModal,
+  onOpenUploadModal,
   onGoogleSignIn,
   onGoogleSignOut,
 }) => {
@@ -110,6 +113,17 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="gsi-material-button-contents sm:hidden">Connect</span>
             </button>
           )}
+
+          {/* Month-End Sheet Upload Button */}
+          <button
+            type="button"
+            onClick={onOpenUploadModal}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 transition-all shadow-sm group"
+            title="Upload month-end Google Sheets or Excel file to automatically update the site"
+          >
+            <CloudUpload className="w-3.5 h-3.5 text-emerald-400 group-hover:scale-110 transition-transform" />
+            <span className="hidden sm:inline">Upload Sheet</span>
+          </button>
 
           {/* User profile / Logout */}
           {googleUser && (

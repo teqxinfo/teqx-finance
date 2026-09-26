@@ -47,7 +47,7 @@ export const ExpensePieChart: React.FC<ExpensePieChartProps> = ({
     let total = 0;
 
     expenseTransactions.forEach((tx) => {
-      const cat = tx.category || 'Other';
+      const cat = tx.payBy || tx.category || 'Expense';
       categoryMap[cat] = (categoryMap[cat] || 0) + tx.amount;
       total += tx.amount;
     });

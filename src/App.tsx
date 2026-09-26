@@ -28,9 +28,11 @@ import { ExpensePieChart } from './components/ExpensePieChart';
 import { TrendLineChart } from './components/TrendLineChart';
 import { RecentActivity } from './components/RecentActivity';
 import { GoogleSheetModal, CONFIGURED_SHEET_ID } from './components/GoogleSheetModal';
+import { UploadSheetModal } from './components/UploadSheetModal';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { DateRangePicker, DateRange, getPresetDates } from './components/DateRangePicker';
 import { formatINR } from './utils/currency';
+import { CloudUpload } from 'lucide-react';
 
 const DEFAULT_CONFIGURED_SPREADSHEET: SpreadsheetInfo = {
   id: CONFIGURED_SHEET_ID,
@@ -74,6 +76,7 @@ export default function App() {
   const [formInitialType, setFormInitialType] = useState<TransactionType>('Expense');
   const [isQuickAddModalOpen, setIsQuickAddModalOpen] = useState(false);
   const [isSheetModalOpen, setIsSheetModalOpen] = useState(false);
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -301,6 +304,24 @@ export default function App() {
     setPendingDeleteTx(tx);
   };
 
+  // Update Paid from (Person Name)
+  const handleUpdatePaidFrom = async (tx: Transaction, newName: string) => {
+    const cleanName = newName.trim() || 'Self';
+    // Update local state immediately
+    setTransactions((prev) =>
+      prev.map((item) => (item.id === tx.id ? { ...item, payFrom: cleanName } : item))
+    );
+
+    // If connected to Google Sheets and has rowIndex, update remote spreadsheet
+    if (accessToken && spreadsheetInfo?.id && tx.rowIndex) {
+      try {
+        await sheetsService.updatePaidFrom(accessToken, spreadsheetInfo.id, tx.rowIndex, cleanName);
+      } catch (err: any) {
+        console.error('Failed to sync updated payer name to Google Sheets:', err);
+      }
+    }
+  };
+
   const handleConfirmDelete = async () => {
     if (!pendingDeleteTx) return;
     const target = pendingDeleteTx;
@@ -315,6 +336,78 @@ export default function App() {
       console.error('Failed to delete from Google Sheets:', err);
       setTransactions((prev) => prev.filter((t) => t.id !== target.id));
       alert(`Removed from view. Note: Sheet deletion warning: ${err.message}`);
+    }
+  };
+
+  // Month-End Sheet Upload: Apply parsed transactions to site & optionally to cloud sheet
+  const handleApplyImport = async (
+    newTransactions: Transaction[],
+    mode: 'replace' | 'append',
+    syncToGoogleSheets: boolean
+  ) => {
+    let updatedList: Transaction[] = [];
+
+    if (mode === 'replace') {
+      updatedList = newTransactions.map((tx, idx) => ({
+        ...tx,
+        rowIndex: idx + 2,
+      }));
+    } else {
+      const existingKeys = new Set(
+        transactions.map((t) => `${t.date}-${t.amount}-${t.description.trim().toLowerCase()}`)
+      );
+      const nonDuplicates = newTransactions.filter(
+        (t) => !existingKeys.has(`${t.date}-${t.amount}-${t.description.trim().toLowerCase()}`)
+      );
+      updatedList = [
+        ...transactions,
+        ...nonDuplicates.map((tx, idx) => ({
+          ...tx,
+          rowIndex: transactions.length + idx + 2,
+        })),
+      ];
+    }
+
+    setTransactions(updatedList);
+    localStorage.setItem('ledgerpulse_transactions', JSON.stringify(updatedList));
+
+    if (syncToGoogleSheets && accessToken && spreadsheetInfo?.id) {
+      setIsSyncing(true);
+      try {
+        if (mode === 'replace') {
+          await sheetsService.initializeHeadersAndCategories(accessToken, spreadsheetInfo.id);
+          const rows = updatedList.map((tx) => [
+            tx.date,
+            tx.type,
+            '',
+            tx.amount,
+            tx.description,
+            tx.payBy || 'UPI',
+            tx.payFrom || 'Self',
+          ]);
+          if (rows.length > 0) {
+            await fetch(
+              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetInfo.id}/values/Transactions!A2:G${rows.length + 1}?valueInputOption=USER_ENTERED`,
+              {
+                method: 'PUT',
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ values: rows }),
+              }
+            );
+          }
+        } else {
+          for (const tx of newTransactions) {
+            await sheetsService.appendTransaction(accessToken, spreadsheetInfo.id, tx);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to sync to Google Sheets:', err);
+      } finally {
+        setIsSyncing(false);
+      }
     }
   };
 
@@ -461,6 +554,7 @@ export default function App() {
               <RecentActivity
                 transactions={filteredTransactions}
                 onDeleteTransaction={handleDeleteTransaction}
+                onUpdatePaidFrom={handleUpdatePaidFrom}
               />
             </div>
           </div>
@@ -502,6 +596,7 @@ export default function App() {
               <RecentActivity
                 transactions={filteredTransactions.slice(0, 5)}
                 onDeleteTransaction={handleDeleteTransaction}
+                onUpdatePaidFrom={handleUpdatePaidFrom}
               />
             </div>
           )}
@@ -556,6 +651,7 @@ export default function App() {
               <RecentActivity
                 transactions={filteredTransactions}
                 onDeleteTransaction={handleDeleteTransaction}
+                onUpdatePaidFrom={handleUpdatePaidFrom}
               />
             </div>
           )}
@@ -597,7 +693,7 @@ export default function App() {
         title="Delete Transaction?"
         message={`Are you sure you want to permanently delete this ${pendingDeleteTx?.type.toLowerCase()} record of ${formatINR(
           pendingDeleteTx?.amount || 0
-        )} (${pendingDeleteTx?.category}) from your Google Sheets database? This operation modifies spreadsheet rows.`}
+        )}${pendingDeleteTx?.payBy ? ` via ${pendingDeleteTx.payBy}` : ''}${pendingDeleteTx?.payFrom ? ` from ${pendingDeleteTx.payFrom}` : ''} (${pendingDeleteTx?.description || 'No description'}) from your Google Sheets database? This operation modifies spreadsheet rows.`}
         confirmLabel="Delete from Sheets"
         cancelLabel="Keep Record"
         isDestructive={true}

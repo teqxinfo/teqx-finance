@@ -7,6 +7,8 @@ export interface Transaction {
   category: string;
   amount: number;
   description: string;
+  payBy?: string; // e.g. 'UPI', 'Cash', 'Credit Card', 'Debit Card', 'Net Banking', etc.
+  payFrom?: string; // Person who made the payment (e.g. 'Self', 'Anand', 'Priya', 'Partner', etc.)
   rowIndex?: number; // Row index in Google Sheets (1-based, where 1 is header)
 }
 

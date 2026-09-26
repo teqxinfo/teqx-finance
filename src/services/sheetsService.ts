@@ -90,39 +90,27 @@ export const sheetsService = {
    * Seed headers and categories in newly created or blank sheets
    */
   async initializeHeadersAndCategories(accessToken: string, spreadsheetId: string): Promise<void> {
-    // 1. Transactions Tab Headers
-    await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/Transactions!A1:E1?valueInputOption=USER_ENTERED`, {
+    // 1. Transactions Tab Headers (Date, Type, Category, Amount, Description, Pay By, Paid from :)
+    await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/Transactions!A1:G1?valueInputOption=USER_ENTERED`, {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        values: [['Date', 'Type', 'Category', 'Amount', 'Description']],
+        values: [['Date', 'Type', 'Category', 'Amount', 'Description', 'Pay By', 'Paid from :']],
       }),
     });
 
-    // 2. Categories Tab Headers & Initial Values
-    // Column A: Income Categories, Column B: Expense Categories
-    const maxRows = Math.max(DEFAULT_CATEGORIES.incomeCategories.length, DEFAULT_CATEGORIES.expenseCategories.length);
-    const categoryRows: string[][] = [
-      ['Income Categories', 'Expense Categories']
-    ];
-
-    for (let i = 0; i < maxRows; i++) {
-      const inc = DEFAULT_CATEGORIES.incomeCategories[i] || '';
-      const exp = DEFAULT_CATEGORIES.expenseCategories[i] || '';
-      categoryRows.push([inc, exp]);
-    }
-
-    await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/Categories!A1:B${categoryRows.length}?valueInputOption=USER_ENTERED`, {
+    // 2. Categories Tab Headers - Category columns initialized empty (all items removed)
+    await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/Categories!A1:B1?valueInputOption=USER_ENTERED`, {
       method: 'PUT',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        values: categoryRows,
+        values: [['Income Categories', 'Expense Categories']],
       }),
     });
   },
@@ -249,10 +237,10 @@ export const sheetsService = {
 
   /**
    * Read transactions from "Transactions" tab:
-   * Columns: Date, Type, Category, Amount, Description
+   * Columns: Date (A), Type (B), Category (C), Amount (D), Description (E), Pay By (F), Pay from : (G)
    */
   async readTransactions(accessToken: string, spreadsheetId: string): Promise<Transaction[]> {
-    const res = await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/Transactions!A2:E2000`, {
+    const res = await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/Transactions!A2:G2000`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
@@ -268,12 +256,15 @@ export const sheetsService = {
     rows.forEach((row, idx) => {
       const date = row[0] || '';
       const type = (row[1] || 'Expense') as TransactionType;
-      const category = row[2] || 'Uncategorized';
+      // Category column is cleared / kept empty as requested
+      const category = '';
       const rawAmount = typeof row[3] === 'string' ? row[3].replace(/[₹$,\s]/g, '').replace(/Rs\.?/gi, '') : row[3];
       const amount = parseFloat(rawAmount) || 0;
       const description = row[4] || '';
+      const payBy = row[5] || '';
+      const payFrom = row[6] || '';
 
-      if (date || amount > 0 || description) {
+      if (date || amount > 0 || description || payBy || payFrom) {
         transactions.push({
           id: `row-${idx + 2}-${Date.now()}`,
           date,
@@ -281,6 +272,8 @@ export const sheetsService = {
           category,
           amount,
           description,
+          payBy,
+          payFrom,
           rowIndex: idx + 2, // 1-based index (row 1 is header)
         });
       }
@@ -290,7 +283,9 @@ export const sheetsService = {
   },
 
   /**
-   * Append a transaction to "Transactions" tab
+   * Append a transaction to "Transactions" tab:
+   * Writes [Date, Type, Category (empty ""), Amount, Description, Pay By, Pay from :]
+   * Ensures Category column has all things removed.
    */
   async appendTransaction(
     accessToken: string,
@@ -298,7 +293,7 @@ export const sheetsService = {
     tx: Omit<Transaction, 'id' | 'rowIndex'>
   ): Promise<void> {
     const res = await fetch(
-      `${SHEETS_API_BASE}/${spreadsheetId}/values/Transactions!A:E:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+      `${SHEETS_API_BASE}/${spreadsheetId}/values/Transactions!A:G:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
       {
         method: 'POST',
         headers: {
@@ -306,7 +301,8 @@ export const sheetsService = {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          values: [[tx.date, tx.type, tx.category, tx.amount, tx.description]],
+          // Notice: 3rd element (Category column) is explicitly empty string ""
+          values: [[tx.date, tx.type, '', tx.amount, tx.description, tx.payBy || 'Cash', tx.payFrom || 'Self']],
         }),
       }
     );
@@ -315,6 +311,18 @@ export const sheetsService = {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error?.message || `Failed to record transaction (${res.status})`);
     }
+  },
+
+  /**
+   * Clears all values from Category column (Column C) in the Transactions tab
+   */
+  async clearCategoryColumn(accessToken: string, spreadsheetId: string): Promise<void> {
+    await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/Transactions!C2:C5000:clear`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
   },
 
   /**
@@ -357,6 +365,35 @@ export const sheetsService = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.error?.message || `Failed to delete row (${res.status})`);
+    }
+  },
+
+  /**
+   * Update the "Paid from :" person name in Column G for a specific row
+   */
+  async updatePaidFrom(
+    accessToken: string,
+    spreadsheetId: string,
+    rowIndex: number,
+    payerName: string
+  ): Promise<void> {
+    const res = await fetch(
+      `${SHEETS_API_BASE}/${spreadsheetId}/values/Transactions!G${rowIndex}?valueInputOption=USER_ENTERED`,
+      {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          values: [[payerName]],
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error?.message || `Failed to update payer name (${res.status})`);
     }
   },
 };

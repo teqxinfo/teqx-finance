@@ -1,20 +1,22 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Plus,
   Minus,
   Calendar,
-  Tag,
   IndianRupee,
   FileText,
-  PlusCircle,
+  CreditCard,
   CheckCircle2,
-  X
+  X,
+  Wallet,
+  User,
+  UserCheck
 } from 'lucide-react';
 import { CategoriesData, TransactionType, Transaction } from '../types';
 import { formatINR, CURRENCY_SYMBOL } from '../utils/currency';
 
 interface TransactionFormProps {
-  categories: CategoriesData;
+  categories?: CategoriesData;
   initialType?: TransactionType;
   onSubmit: (tx: Omit<Transaction, 'id' | 'rowIndex'>) => Promise<void>;
   onAddCategory?: (type: TransactionType, categoryName: string) => Promise<void>;
@@ -23,11 +25,27 @@ interface TransactionFormProps {
   isModal?: boolean;
 }
 
+const PAYMENT_METHODS = [
+  'UPI',
+  'Cash',
+  'Credit Card',
+  'Debit Card',
+  'Net Banking',
+  'Cheque',
+  'Other'
+];
+
+const QUICK_PAYERS = [
+  'Self',
+  'Partner',
+  'Office',
+  'Family',
+  'Friend'
+];
+
 export const TransactionForm: React.FC<TransactionFormProps> = ({
-  categories,
   initialType = 'Expense',
   onSubmit,
-  onAddCategory,
   onClose,
   isSubmitting = false,
   isModal = false,
@@ -38,29 +56,18 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
     const today = new Date();
     return today.toISOString().split('T')[0];
   });
-  const [category, setCategory] = useState('');
   const [description, setDescription] = useState('');
-  
-  // Custom new category modal/input state
-  const [isAddingNewCategory, setIsAddingNewCategory] = useState(false);
-  const [newCategoryName, setNewCategoryName] = useState('');
-  const [isSavingCategory, setIsSavingCategory] = useState(false);
+  const [payBy, setPayBy] = useState('UPI');
+  const [customPayBy, setCustomPayBy] = useState('');
+  const [payFrom, setPayFrom] = useState('Self');
+  const payFromInputRef = useRef<HTMLInputElement>(null);
   const [successMessage, setSuccessMessage] = useState('');
-
-  // Synchronize category list whenever type changes or categories update
-  const currentCategories = type === 'Income' ? categories.incomeCategories : categories.expenseCategories;
 
   useEffect(() => {
     if (initialType) {
       setType(initialType);
     }
   }, [initialType]);
-
-  useEffect(() => {
-    if (currentCategories.length > 0 && !currentCategories.includes(category)) {
-      setCategory(currentCategories[0]);
-    }
-  }, [type, categories]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -70,24 +77,30 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
       return;
     }
 
-    if (!category.trim()) {
-      alert('Please select or add a category.');
-      return;
-    }
+    const effectivePayBy = payBy === 'Other' 
+      ? (customPayBy.trim() || 'Other')
+      : payBy;
+
+    const effectivePayFrom = payFrom.trim() || 'Self';
 
     try {
       await onSubmit({
         date,
         type,
-        category: category.trim(),
+        // Category column is cleared / kept empty as requested
+        category: '',
         amount: parsedAmount,
         description: description.trim() || `${type} recorded`,
+        payBy: effectivePayBy,
+        payFrom: effectivePayFrom,
       });
 
       // Show temporary success feedback
       setSuccessMessage(`${type} of ${formatINR(parsedAmount)} recorded!`);
       setAmount('');
       setDescription('');
+      if (payBy === 'Other') setCustomPayBy('');
+      setPayFrom('Self');
 
       setTimeout(() => {
         setSuccessMessage('');
@@ -97,25 +110,6 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
       }, 1200);
     } catch (err: any) {
       alert(err.message || 'Failed to submit transaction.');
-    }
-  };
-
-  const handleAddNewCategory = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newCategoryName.trim()) return;
-
-    setIsSavingCategory(true);
-    try {
-      if (onAddCategory) {
-        await onAddCategory(type, newCategoryName.trim());
-      }
-      setCategory(newCategoryName.trim());
-      setNewCategoryName('');
-      setIsAddingNewCategory(false);
-    } catch (err: any) {
-      alert(err.message || 'Failed to add category to spreadsheet.');
-    } finally {
-      setIsSavingCategory(false);
     }
   };
 
@@ -140,7 +134,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
           <span>Log New Transaction</span>
         </h3>
         <p className="text-xs text-slate-400 mt-0.5">
-          Writes to Google Sheets <span className="font-mono text-slate-300">Transactions</span> tab
+          Writes to Google Sheets <span className="font-mono text-slate-300">Transactions</span> tab with <span className="font-mono text-emerald-400">Pay By</span>
         </p>
       </div>
 
@@ -222,63 +216,145 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
             </div>
           </div>
 
-          {/* Dynamic Separated Categories Dropdown */}
+          {/* Pay By Dropdown & Input */}
           <div>
             <div className="flex items-center justify-between mb-1.5">
-              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-                Category ({type === 'Income' ? 'Tab Col A' : 'Tab Col B'})
+              <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <CreditCard className="w-3.5 h-3.5 text-emerald-400" />
+                Pay By (Payment Method)
               </label>
-              <button
-                type="button"
-                onClick={() => setIsAddingNewCategory(!isAddingNewCategory)}
-                className="text-[11px] font-semibold text-emerald-400 hover:text-emerald-300 flex items-center gap-1 transition-colors"
-              >
-                <PlusCircle className="w-3 h-3" />
-                <span>{isAddingNewCategory ? 'Cancel' : 'New Category'}</span>
-              </button>
+              <span className="text-[10px] text-slate-500">Google Sheets Col F</span>
             </div>
 
-            {isAddingNewCategory ? (
-              <div className="p-3 bg-slate-950/80 border border-emerald-500/30 rounded-xl space-y-2">
-                <p className="text-[11px] text-slate-400">
-                  Add new {type.toLowerCase()} category to spreadsheet tab:
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    value={newCategoryName}
-                    onChange={(e) => setNewCategoryName(e.target.value)}
-                    placeholder={`e.g. ${type === 'Income' ? 'Consulting' : 'Pet Care'}`}
-                    className="flex-1 px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-emerald-500"
-                  />
-                  <button
-                    type="button"
-                    disabled={isSavingCategory || !newCategoryName.trim()}
-                    onClick={handleAddNewCategory}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors"
-                  >
-                    {isSavingCategory ? 'Saving...' : 'Add'}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                  <Tag className="w-4 h-4" />
-                </div>
-                <select
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 bg-slate-950/70 border border-slate-700/80 rounded-xl text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all appearance-none cursor-pointer"
+            {/* Quick Selector Pills */}
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {['UPI', 'Cash', 'Credit Card', 'Debit Card', 'Net Banking'].map((method) => (
+                <button
+                  key={method}
+                  type="button"
+                  onClick={() => {
+                    setPayBy(method);
+                    setCustomPayBy('');
+                  }}
+                  className={`px-2.5 py-1 text-xs font-medium rounded-lg transition-all ${
+                    payBy === method
+                      ? 'bg-emerald-600 text-white shadow-sm font-semibold'
+                      : 'bg-slate-950 border border-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
                 >
-                  {currentCategories.map((cat) => (
-                    <option key={cat} value={cat} className="bg-slate-900 text-slate-100">
-                      {cat}
-                    </option>
-                  ))}
-                </select>
+                  {method}
+                </button>
+              ))}
+            </div>
+
+            {/* Dropdown Selector */}
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                <Wallet className="w-4 h-4" />
+              </div>
+              <select
+                value={payBy}
+                onChange={(e) => setPayBy(e.target.value)}
+                className="w-full pl-9 pr-4 py-2 bg-slate-950/70 border border-slate-700/80 rounded-xl text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all appearance-none cursor-pointer"
+              >
+                {PAYMENT_METHODS.map((method) => (
+                  <option key={method} value={method} className="bg-slate-900 text-slate-100">
+                    {method}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {/* Custom Input when 'Other' is chosen */}
+            {payBy === 'Other' && (
+              <div className="mt-2 animate-in fade-in duration-150">
+                <input
+                  type="text"
+                  required
+                  value={customPayBy}
+                  onChange={(e) => setCustomPayBy(e.target.value)}
+                  placeholder="Specify custom payment method (e.g. Crypto, Gift Card, Cheque #)..."
+                  className="w-full px-3.5 py-2 bg-slate-950 border border-emerald-500/40 rounded-xl text-slate-100 text-xs focus:outline-none focus:border-emerald-500"
+                />
               </div>
             )}
+          </div>
+
+          {/* Paid from : (Person who made payment - Direct text input) */}
+          <div>
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-blue-400" />
+                <span>Paid from :</span>
+                <span className="text-[11px] font-medium text-blue-400 lowercase">(type name of person)</span>
+              </label>
+              <span className="text-[10px] text-slate-500">Google Sheets Col G</span>
+            </div>
+
+            {/* Direct Editable Text Input */}
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
+                <UserCheck className="w-4 h-4 text-blue-400" />
+              </div>
+              <input
+                ref={payFromInputRef}
+                type="text"
+                required
+                autoComplete="off"
+                value={payFrom}
+                onChange={(e) => setPayFrom(e.target.value)}
+                onFocus={(e) => e.target.select()}
+                placeholder="Type person's name here (e.g. Anand, Rahul, Priya)..."
+                className="w-full pl-9 pr-10 py-2.5 bg-slate-950/90 border border-slate-700 hover:border-slate-600 focus:border-blue-500 rounded-xl text-slate-100 text-sm placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 transition-all font-medium"
+              />
+              {payFrom && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPayFrom('');
+                    payFromInputRef.current?.focus();
+                  }}
+                  className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-200 transition-colors"
+                  title="Clear to type a new name"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+
+            {/* Quick Fill Suggestions */}
+            <div className="flex items-center flex-wrap gap-1.5 mt-2">
+              <span className="text-[11px] text-slate-400 font-medium">Quick fill:</span>
+              {QUICK_PAYERS.map((person) => (
+                <button
+                  key={person}
+                  type="button"
+                  onClick={() => {
+                    setPayFrom(person);
+                  }}
+                  className={`px-2 py-0.5 text-[11px] font-medium rounded-md transition-all ${
+                    payFrom.trim().toLowerCase() === person.toLowerCase()
+                      ? 'bg-blue-600 text-white shadow-sm font-semibold'
+                      : 'bg-slate-800/80 border border-slate-700/60 text-slate-300 hover:bg-slate-700 hover:text-white'
+                  }`}
+                >
+                  {person}
+                </button>
+              ))}
+              <button
+                type="button"
+                onClick={() => {
+                  setPayFrom('');
+                  payFromInputRef.current?.focus();
+                }}
+                className="px-2 py-0.5 text-[11px] font-medium rounded-md bg-slate-900 border border-slate-700/80 text-blue-400 hover:bg-blue-500/10 transition-colors"
+              >
+                + Type name
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1">
+              You can type any person's name directly in the box above.
+            </p>
           </div>
 
           {/* Date Picker */}
@@ -313,7 +389,7 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
                 type="text"
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                placeholder="e.g. Client invoice #102, Grocery restock"
+                placeholder="e.g. Client invoice #102, Grocery restock, Dinner with team"
                 className="w-full pl-9 pr-4 py-2 bg-slate-950/70 border border-slate-700/80 rounded-xl text-slate-100 text-sm placeholder-slate-600 focus:outline-none focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500 transition-all"
               />
             </div>
@@ -356,3 +432,4 @@ export const TransactionForm: React.FC<TransactionFormProps> = ({
 
   return content;
 };
+
