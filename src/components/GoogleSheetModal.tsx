@@ -11,7 +11,8 @@ import {
   Copy,
   Check,
   ShieldAlert,
-  Server
+  Server,
+  CloudUpload
 } from 'lucide-react';
 import { SpreadsheetInfo } from '../types';
 
@@ -26,6 +27,7 @@ interface GoogleSheetModalProps {
   spreadsheetInfo: SpreadsheetInfo | null;
   onConnectExisting: (sheetIdOrUrl: string) => Promise<void>;
   onCreateNewSheet: (title: string) => Promise<void>;
+  onOpenUploadModal?: () => void;
   isProcessing: boolean;
 }
 
@@ -35,6 +37,7 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
   spreadsheetInfo,
   onConnectExisting,
   onCreateNewSheet,
+  onOpenUploadModal,
   isProcessing,
 }) => {
   const [activeTab, setActiveTab] = useState<'status' | 'connect' | 'create'>('status');
@@ -234,6 +237,32 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
                     Link Other
                   </button>
                 </div>
+              </div>
+            )}
+
+            {/* Direct Month-End File Upload Option */}
+            {onOpenUploadModal && (
+              <div className="p-3.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-between gap-3">
+                <div className="text-xs">
+                  <div className="font-semibold text-emerald-300 flex items-center gap-1.5">
+                    <CloudUpload className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Upload Month-End File Directly</span>
+                  </div>
+                  <div className="text-[11px] text-slate-400 mt-0.5">
+                    Import .xlsx or .csv from Google Sheets to auto-refresh all metrics
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onOpenUploadModal();
+                  }}
+                  className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg transition-colors shrink-0 flex items-center gap-1.5 shadow-sm"
+                >
+                  <CloudUpload className="w-3.5 h-3.5" />
+                  <span>Upload File</span>
+                </button>
               </div>
             )}
 

@@ -492,6 +492,7 @@ export default function App() {
           }
         }}
         onOpenSheetModal={() => setIsSheetModalOpen(true)}
+        onOpenUploadModal={() => setIsUploadModalOpen(true)}
         onGoogleSignIn={handleGoogleSignIn}
         onGoogleSignOut={handleGoogleSignOut}
       />
@@ -555,6 +556,7 @@ export default function App() {
                 transactions={filteredTransactions}
                 onDeleteTransaction={handleDeleteTransaction}
                 onUpdatePaidFrom={handleUpdatePaidFrom}
+                onOpenUploadModal={() => setIsUploadModalOpen(true)}
               />
             </div>
           </div>
@@ -597,6 +599,7 @@ export default function App() {
                 transactions={filteredTransactions.slice(0, 5)}
                 onDeleteTransaction={handleDeleteTransaction}
                 onUpdatePaidFrom={handleUpdatePaidFrom}
+                onOpenUploadModal={() => setIsUploadModalOpen(true)}
               />
             </div>
           )}
@@ -652,6 +655,7 @@ export default function App() {
                 transactions={filteredTransactions}
                 onDeleteTransaction={handleDeleteTransaction}
                 onUpdatePaidFrom={handleUpdatePaidFrom}
+                onOpenUploadModal={() => setIsUploadModalOpen(true)}
               />
             </div>
           )}
@@ -684,7 +688,16 @@ export default function App() {
         spreadsheetInfo={spreadsheetInfo}
         onConnectExisting={handleConnectExistingSheet}
         onCreateNewSheet={handleCreateNewSheet}
+        onOpenUploadModal={() => setIsUploadModalOpen(true)}
         isProcessing={isSyncing}
+      />
+
+      {/* Direct Google Sheet Upload / Month-End File Modal */}
+      <UploadSheetModal
+        isOpen={isUploadModalOpen}
+        onClose={() => setIsUploadModalOpen(false)}
+        onApplyImport={handleApplyImport}
+        isGoogleSheetsConnected={!!(accessToken && spreadsheetInfo?.id)}
       />
 
       {/* Mandatory User Confirmation Dialog for Destructive Operations */}
