@@ -55,8 +55,8 @@ export const Header: React.FC<HeaderProps> = ({
 
         {/* Right side controls */}
         <div className="flex items-center gap-2 sm:gap-3">
-          {/* Sheets Connection Pill */}
-          {googleUser ? (
+          {/* Sheets Connection Pill: displayed if spreadsheet is connected (via link or OAuth) */}
+          {spreadsheetInfo ? (
             <div className="flex items-center gap-1.5 sm:gap-2 bg-slate-900 border border-slate-800 rounded-xl px-2.5 py-1.5 text-xs">
               <button
                 type="button"
@@ -67,11 +67,11 @@ export const Header: React.FC<HeaderProps> = ({
                 <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
                 <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
                 <span className="hidden md:inline font-medium max-w-[140px] truncate">
-                  {spreadsheetInfo ? spreadsheetInfo.name : 'Connect Sheet'}
+                  {spreadsheetInfo.name || 'Connected Sheet'}
                 </span>
               </button>
 
-              {spreadsheetInfo && (
+              {spreadsheetInfo.url && (
                 <a
                   href={spreadsheetInfo.url}
                   target="_blank"
@@ -88,12 +88,12 @@ export const Header: React.FC<HeaderProps> = ({
                 onClick={onRefreshData}
                 disabled={isSyncing}
                 className="text-slate-400 hover:text-slate-200 p-1 rounded-lg hover:bg-slate-800 transition-colors disabled:opacity-50"
-                title="Sync from Google Sheets"
+                title="Sync & refresh data from Google Sheets"
               >
                 <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-emerald-400' : ''}`} />
               </button>
             </div>
-          ) : (
+          ) : !googleUser ? (
             <button
               type="button"
               onClick={onGoogleSignIn}
@@ -112,7 +112,7 @@ export const Header: React.FC<HeaderProps> = ({
               <span className="gsi-material-button-contents hidden sm:inline">Connect Google Sheets</span>
               <span className="gsi-material-button-contents sm:hidden">Connect</span>
             </button>
-          )}
+          ) : null}
 
           {/* Month-End Sheet Upload Button */}
           <button

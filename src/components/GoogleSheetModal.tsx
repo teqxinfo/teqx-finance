@@ -386,8 +386,11 @@ export const GoogleSheetModal: React.FC<GoogleSheetModalProps> = ({
             </div>
 
             <p className="text-xs text-slate-400">
-              Enter your existing Google Sheets URL or ID. The app will ensure the <span className="font-mono text-slate-300">Transactions</span> and <span className="font-mono text-slate-300">Categories</span> tabs exist.
+              Enter your Google Sheets link or ID. Direct integration automatically reads and syncs all transactions into the site.
             </p>
+            <div className="p-2.5 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-[11px] text-emerald-300">
+              💡 <strong>Direct Integration:</strong> Simply copy the link from your browser or Google Sheet's <strong>Share</strong> button and paste it below to automatically update all site data!
+            </div>
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
                 Google Sheets URL or Spreadsheet ID

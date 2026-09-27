@@ -22,6 +22,7 @@ export interface SpreadsheetInfo {
   name: string;
   url: string;
   lastSyncedAt?: string;
+  syncMode?: 'oauth' | 'link';
 }
 
 export interface GoogleUserProfile {

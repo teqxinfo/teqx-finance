@@ -11,7 +11,8 @@ import {
   User,
   Pencil,
   Check,
-  CloudUpload
+  CloudUpload,
+  Download
 } from 'lucide-react';
 import { Transaction, TransactionType } from '../types';
 import { formatINR } from '../utils/currency';
@@ -79,6 +80,35 @@ export const RecentActivity: React.FC<RecentActivityProps> = ({
 
   const displayedTransactions = filteredTransactions.slice(0, limit);
 
+  const handleExportCSV = () => {
+    if (filteredTransactions.length === 0) return;
+
+    // Headers exactly matching Google Sheet 'Transactions' schema
+    const headers = ['Date', 'Type', 'Category', 'Amount', 'Description', 'Pay By', 'Paid from :'];
+    const rows = filteredTransactions.map((tx) => [
+      tx.date || '',
+      tx.type || 'Expense',
+      tx.category || '',
+      tx.amount.toString(),
+      `"${(tx.description || '').replace(/"/g, '""')}"`,
+      `"${(tx.payBy || 'UPI').replace(/"/g, '""')}"`,
+      `"${(tx.payFrom || 'Self').replace(/"/g, '""')}"`,
+    ]);
+
+    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const filterSuffix = filterType === 'All' ? 'all' : filterType.toLowerCase();
+    const dateStr = new Date().toISOString().split('T')[0];
+    link.download = `transactions_${filterSuffix}_${dateStr}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="bg-slate-900/90 border border-slate-800 rounded-2xl p-5 shadow-xl">
       {/* Header with Title and Type Filter */}
@@ -93,8 +123,23 @@ export const RecentActivity: React.FC<RecentActivityProps> = ({
           </p>
         </div>
 
-        {/* Action Controls: Upload Sheet & Filter Pills */}
+        {/* Action Controls: Export CSV, Upload Sheet & Filter Pills */}
         <div className="flex items-center gap-2 self-start sm:self-auto flex-wrap">
+          {/* Export Filtered Transactions as CSV Button */}
+          <button
+            type="button"
+            onClick={handleExportCSV}
+            disabled={filteredTransactions.length === 0}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700/80 transition-all shadow-sm disabled:opacity-40 disabled:cursor-not-allowed group"
+            title={`Export current view of ${filteredTransactions.length} filtered transaction${filteredTransactions.length === 1 ? '' : 's'} as CSV file`}
+          >
+            <Download className="w-3.5 h-3.5 text-emerald-400 group-hover:translate-y-0.5 transition-transform" />
+            <span>Export CSV</span>
+            <span className="ml-0.5 px-1.5 py-0.2 bg-slate-950/80 text-[10px] text-slate-300 rounded-full font-mono">
+              {filteredTransactions.length}
+            </span>
+          </button>
+
           {onOpenUploadModal && (
             <button
               type="button"

@@ -32,6 +32,7 @@ import { UploadSheetModal } from './components/UploadSheetModal';
 import { ConfirmationModal } from './components/ConfirmationModal';
 import { DateRangePicker, DateRange, getPresetDates } from './components/DateRangePicker';
 import { formatINR } from './utils/currency';
+import { fetchGoogleSheetDirect } from './utils/googleSheetLink';
 import { CloudUpload } from 'lucide-react';
 
 const DEFAULT_CONFIGURED_SPREADSHEET: SpreadsheetInfo = {
@@ -116,20 +117,35 @@ export default function App() {
   const syncWithGoogleSheets = useCallback(async (token: string, sheetId: string) => {
     setIsSyncing(true);
     try {
-      // 1. Ensure required tabs exist
-      await sheetsService.ensureRequiredTabs(token, sheetId);
-
-      // 2. Fetch separated categories (Column A: Income, Column B: Expense)
-      const fetchedCats = await sheetsService.readCategories(token, sheetId);
-      setCategories(fetchedCats);
-
-      // 3. Fetch transactions
+      // 1. Fetch all transactions across all relevant data tabs
       const fetchedTxs = await sheetsService.readTransactions(token, sheetId);
       if (fetchedTxs.length > 0) {
         setTransactions(fetchedTxs);
+        localStorage.setItem('ledgerpulse_transactions', JSON.stringify(fetchedTxs));
+
+        // Derive and update categories from real transaction data
+        const incCats = new Set<string>();
+        const expCats = new Set<string>();
+        fetchedTxs.forEach((t) => {
+          if (t.category && t.category.trim()) {
+            if (t.type === 'Income') incCats.add(t.category.trim());
+            else expCats.add(t.category.trim());
+          }
+        });
+
+        // 2. Fetch categories tab if present
+        const sheetCats = await sheetsService.readCategories(token, sheetId);
+        sheetCats.incomeCategories.forEach((c) => incCats.add(c));
+        sheetCats.expenseCategories.forEach((c) => expCats.add(c));
+
+        const mergedCats: CategoriesData = {
+          incomeCategories: incCats.size > 0 ? Array.from(incCats) : DEFAULT_CATEGORIES.incomeCategories,
+          expenseCategories: expCats.size > 0 ? Array.from(expCats) : DEFAULT_CATEGORIES.expenseCategories,
+        };
+        setCategories(mergedCats);
+        localStorage.setItem('ledgerpulse_categories', JSON.stringify(mergedCats));
       } else {
-        // If sheet is empty, optionally write initial transactions or keep empty
-        console.log('Sheet is empty or has only headers.');
+        console.log('No transactions found in spreadsheet.');
       }
     } catch (err) {
       console.error('Failed to sync with Google Sheets:', err);
@@ -189,32 +205,62 @@ export default function App() {
     setAccessToken(null);
   };
 
-  // Connect Existing Spreadsheet
-  const handleConnectExistingSheet = async (sheetIdOrUrl: string) => {
-    if (!accessToken) {
-      alert('Please connect your Google account first.');
+  // Refresh Data from Google Sheet (OAuth or direct link)
+  const handleRefreshFromSheet = async () => {
+    if (!spreadsheetInfo) {
+      setIsSheetModalOpen(true);
       return;
-    }
-
-    // Extract ID if URL is passed
-    let sheetId = sheetIdOrUrl.trim();
-    const match = sheetId.match(/\/d\/([a-zA-Z0-9-_]+)/);
-    if (match) {
-      sheetId = match[1];
     }
 
     setIsSyncing(true);
     try {
-      const meta = await sheetsService.getSpreadsheet(accessToken, sheetId);
+      if (accessToken && spreadsheetInfo.id) {
+        await syncWithGoogleSheets(accessToken, spreadsheetInfo.id);
+      } else if (spreadsheetInfo.url || spreadsheetInfo.id) {
+        const result = await fetchGoogleSheetDirect(spreadsheetInfo.url || spreadsheetInfo.id, accessToken);
+        if (result.transactions.length > 0) {
+          setTransactions(result.transactions);
+          localStorage.setItem('ledgerpulse_transactions', JSON.stringify(result.transactions));
+          setSpreadsheetInfo((prev) =>
+            prev ? { ...prev, lastSyncedAt: new Date().toISOString() } : null
+          );
+        }
+      }
+    } catch (err: any) {
+      console.error('Failed to sync with Google Sheet:', err);
+      alert(`Could not refresh from Google Sheet: ${err.message}`);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // Connect Existing Spreadsheet by link or ID
+  const handleConnectExistingSheet = async (sheetIdOrUrl: string) => {
+    setIsSyncing(true);
+    try {
+      const result = await fetchGoogleSheetDirect(sheetIdOrUrl, accessToken);
       const info: SpreadsheetInfo = {
-        id: meta.id,
-        name: meta.title,
-        url: `https://docs.google.com/spreadsheets/d/${meta.id}/edit`,
+        id: result.sheetId,
+        name: result.title,
+        url: result.sheetUrl,
         lastSyncedAt: new Date().toISOString(),
+        syncMode: result.usedAuth ? 'oauth' : 'link',
       };
       setSpreadsheetInfo(info);
       localStorage.setItem('ledgerpulse_spreadsheet', JSON.stringify(info));
-      await syncWithGoogleSheets(accessToken, meta.id);
+
+      if (result.transactions.length > 0) {
+        setTransactions(result.transactions);
+        localStorage.setItem('ledgerpulse_transactions', JSON.stringify(result.transactions));
+      }
+
+      if (accessToken && result.usedAuth) {
+        await syncWithGoogleSheets(accessToken, result.sheetId);
+      }
+    } catch (err: any) {
+      console.error('Failed to connect Google Sheet:', err);
+      alert(err.message || 'Could not connect Google Sheet');
+      throw err;
     } finally {
       setIsSyncing(false);
     }
@@ -343,7 +389,8 @@ export default function App() {
   const handleApplyImport = async (
     newTransactions: Transaction[],
     mode: 'replace' | 'append',
-    syncToGoogleSheets: boolean
+    syncToGoogleSheets: boolean,
+    connectedSheetInfo?: { id: string; name: string; url: string }
   ) => {
     let updatedList: Transaction[] = [];
 
@@ -371,15 +418,44 @@ export default function App() {
     setTransactions(updatedList);
     localStorage.setItem('ledgerpulse_transactions', JSON.stringify(updatedList));
 
-    if (syncToGoogleSheets && accessToken && spreadsheetInfo?.id) {
+    // Extract categories from imported transactions to update pie charts and categories
+    const incSet = new Set(categories.incomeCategories);
+    const expSet = new Set(categories.expenseCategories);
+    newTransactions.forEach((tx) => {
+      if (tx.category && tx.category.trim()) {
+        if (tx.type === 'Income') incSet.add(tx.category.trim());
+        else expSet.add(tx.category.trim());
+      }
+    });
+    const mergedCats: CategoriesData = {
+      incomeCategories: Array.from(incSet),
+      expenseCategories: Array.from(expSet),
+    };
+    setCategories(mergedCats);
+    localStorage.setItem('ledgerpulse_categories', JSON.stringify(mergedCats));
+
+    if (connectedSheetInfo) {
+      const info: SpreadsheetInfo = {
+        id: connectedSheetInfo.id,
+        name: connectedSheetInfo.name,
+        url: connectedSheetInfo.url,
+        lastSyncedAt: new Date().toISOString(),
+        syncMode: accessToken ? 'oauth' : 'link',
+      };
+      setSpreadsheetInfo(info);
+      localStorage.setItem('ledgerpulse_spreadsheet', JSON.stringify(info));
+    }
+
+    const targetSheetId = connectedSheetInfo?.id || spreadsheetInfo?.id;
+    if (syncToGoogleSheets && accessToken && targetSheetId) {
       setIsSyncing(true);
       try {
         if (mode === 'replace') {
-          await sheetsService.initializeHeadersAndCategories(accessToken, spreadsheetInfo.id);
+          await sheetsService.initializeHeadersAndCategories(accessToken, targetSheetId);
           const rows = updatedList.map((tx) => [
             tx.date,
             tx.type,
-            '',
+            tx.category || '',
             tx.amount,
             tx.description,
             tx.payBy || 'UPI',
@@ -387,7 +463,7 @@ export default function App() {
           ]);
           if (rows.length > 0) {
             await fetch(
-              `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetInfo.id}/values/Transactions!A2:G${rows.length + 1}?valueInputOption=USER_ENTERED`,
+              `https://sheets.googleapis.com/v4/spreadsheets/${targetSheetId}/values/Transactions!A2:G${rows.length + 1}?valueInputOption=USER_ENTERED`,
               {
                 method: 'PUT',
                 headers: {
@@ -400,7 +476,7 @@ export default function App() {
           }
         } else {
           for (const tx of newTransactions) {
-            await sheetsService.appendTransaction(accessToken, spreadsheetInfo.id, tx);
+            await sheetsService.appendTransaction(accessToken, targetSheetId, tx);
           }
         }
       } catch (err) {
@@ -486,11 +562,7 @@ export default function App() {
         googleUser={googleUser}
         spreadsheetInfo={spreadsheetInfo}
         isSyncing={isSyncing}
-        onRefreshData={() => {
-          if (accessToken && spreadsheetInfo?.id) {
-            syncWithGoogleSheets(accessToken, spreadsheetInfo.id);
-          }
-        }}
+        onRefreshData={handleRefreshFromSheet}
         onOpenSheetModal={() => setIsSheetModalOpen(true)}
         onOpenUploadModal={() => setIsUploadModalOpen(true)}
         onGoogleSignIn={handleGoogleSignIn}
@@ -698,6 +770,9 @@ export default function App() {
         onClose={() => setIsUploadModalOpen(false)}
         onApplyImport={handleApplyImport}
         isGoogleSheetsConnected={!!(accessToken && spreadsheetInfo?.id)}
+        accessToken={accessToken}
+        currentSpreadsheetUrl={spreadsheetInfo?.url}
+        onGoogleSignIn={handleGoogleSignIn}
       />
 
       {/* Mandatory User Confirmation Dialog for Destructive Operations */}

@@ -14,11 +14,16 @@ import {
   Layers,
   ChevronRight,
   Database,
-  CloudUpload
+  CloudUpload,
+  Link2,
+  ExternalLink,
+  Sparkles,
+  Info
 } from 'lucide-react';
 import { Transaction } from '../types';
 import { formatINR } from '../utils/currency';
 import { parseSpreadsheetFile, ParsedSheetResult } from '../utils/sheetParser';
+import { fetchGoogleSheetDirect, extractGoogleSheetDetails } from '../utils/googleSheetLink';
 
 interface UploadSheetModalProps {
   isOpen: boolean;
@@ -26,9 +31,13 @@ interface UploadSheetModalProps {
   onApplyImport: (
     newTransactions: Transaction[],
     mode: 'replace' | 'append',
-    syncToGoogleSheets: boolean
+    syncToGoogleSheets: boolean,
+    connectedSheetInfo?: { id: string; name: string; url: string }
   ) => Promise<void>;
   isGoogleSheetsConnected: boolean;
+  accessToken?: string | null;
+  currentSpreadsheetUrl?: string;
+  onGoogleSignIn?: () => Promise<any>;
 }
 
 export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
@@ -36,14 +45,20 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
   onClose,
   onApplyImport,
   isGoogleSheetsConnected,
+  accessToken,
+  currentSpreadsheetUrl,
+  onGoogleSignIn,
 }) => {
-  const [activeTab, setActiveTab] = useState<'upload' | 'paste'>('upload');
+  const [activeTab, setActiveTab] = useState<'link' | 'upload' | 'paste'>('link');
+  const [sheetUrlInput, setSheetUrlInput] = useState(currentSpreadsheetUrl || '');
   const [isDragging, setIsDragging] = useState(false);
   const [isParsing, setIsParsing] = useState(false);
   const [fileName, setFileName] = useState<string | null>(null);
   const [pastedText, setPastedText] = useState('');
   const [parsedData, setParsedData] = useState<ParsedSheetResult | null>(null);
+  const [detectedSheetMeta, setDetectedSheetMeta] = useState<{ id: string; name: string; url: string } | null>(null);
   const [importMode, setImportMode] = useState<'replace' | 'append'>('replace');
+  const [saveAsConnectedSheet, setSaveAsConnectedSheet] = useState(true);
   const [syncToCloud, setSyncToCloud] = useState(isGoogleSheetsConnected);
   const [isApplying, setIsApplying] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -53,24 +68,83 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
 
   if (!isOpen) return null;
 
+  // Direct Integration: Fetch data directly from pasted Google Sheet Link
+  const handleFetchFromLink = async (tokenToUse?: string | null) => {
+    const rawInput = sheetUrlInput.trim();
+    if (!rawInput) {
+      setErrorMsg('Please paste a Google Sheet link or spreadsheet ID.');
+      return;
+    }
+
+    setIsParsing(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+
+    const token = tokenToUse !== undefined ? tokenToUse : accessToken;
+
+    try {
+      const result = await fetchGoogleSheetDirect(rawInput, token);
+
+      setParsedData(result.parsedResult);
+      setDetectedSheetMeta({
+        id: result.sheetId,
+        name: result.title,
+        url: result.sheetUrl,
+      });
+      setFileName(`Google Sheet: ${result.title}`);
+      setSuccessMsg(
+        `Successfully extracted ${result.transactions.length} transactions from Google Sheet!`
+      );
+    } catch (err: any) {
+      console.error('Error fetching Google Sheet by link:', err);
+      setErrorMsg(
+        err.message ||
+          'Failed to load sheet. Please ensure sharing is set to "Anyone with the link can view".'
+      );
+      setParsedData(null);
+      setDetectedSheetMeta(null);
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
+  // Sign in with Google and automatically retry fetching the sheet
+  const handleSignInAndFetch = async () => {
+    if (!onGoogleSignIn) return;
+    setIsParsing(true);
+    setErrorMsg(null);
+    try {
+      const res = await onGoogleSignIn();
+      if (res?.accessToken) {
+        await handleFetchFromLink(res.accessToken);
+      } else {
+        await handleFetchFromLink();
+      }
+    } catch (err: any) {
+      setErrorMsg(`Google sign-in failed: ${err.message}`);
+    } finally {
+      setIsParsing(false);
+    }
+  };
+
   const handleFileProcess = async (file: File) => {
     setIsParsing(true);
     setErrorMsg(null);
     setSuccessMsg(null);
     setFileName(file.name);
+    setDetectedSheetMeta(null);
 
     try {
       const result = await parseSpreadsheetFile(file);
 
       // If no standard transactions were detected, check if monthly summary was found
       if (result.transactions.length === 0 && result.monthlySummary && result.monthlySummary.length > 0) {
-        // Convert monthly summary into mock/representative transactions for the site
         const generatedTx: Transaction[] = [];
         result.monthlySummary.forEach((m, idx) => {
           if (m.income > 0) {
             generatedTx.push({
               id: `gen-inc-${idx}`,
-              date: `2026-09-01`,
+              date: new Date().toISOString().split('T')[0],
               type: 'Income',
               category: '',
               amount: m.income,
@@ -82,7 +156,7 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
           if (m.expenses > 0) {
             generatedTx.push({
               id: `gen-exp-${idx}`,
-              date: `2026-09-15`,
+              date: new Date().toISOString().split('T')[0],
               type: 'Expense',
               category: '',
               amount: m.expenses,
@@ -97,7 +171,7 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
 
       if (result.transactions.length === 0) {
         setErrorMsg(
-          'Could not find transactions in this file. Please ensure it has columns for Date, Amount, and Description or is exported from Google Sheets.'
+          'Could not find transactions in this file. Please ensure it has columns for Date, Amount, Description, and Type.'
         );
         setParsedData(null);
       } else {
@@ -134,18 +208,18 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
     setErrorMsg(null);
     setSuccessMsg(null);
     setFileName('Pasted Clipboard / CSV');
+    setDetectedSheetMeta(null);
 
     try {
       const result = await parseSpreadsheetFile(pastedText);
 
-      // Fallback for TEQX Dashboard text
       if (result.transactions.length === 0 && result.monthlySummary && result.monthlySummary.length > 0) {
         const generatedTx: Transaction[] = [];
         result.monthlySummary.forEach((m, idx) => {
           if (m.income > 0) {
             generatedTx.push({
               id: `gen-inc-${idx}`,
-              date: `2026-09-01`,
+              date: new Date().toISOString().split('T')[0],
               type: 'Income',
               category: '',
               amount: m.income,
@@ -157,7 +231,7 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
           if (m.expenses > 0) {
             generatedTx.push({
               id: `gen-exp-${idx}`,
-              date: `2026-09-15`,
+              date: new Date().toISOString().split('T')[0],
               type: 'Expense',
               category: '',
               amount: m.expenses,
@@ -190,16 +264,22 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
     setErrorMsg(null);
 
     try {
-      await onApplyImport(parsedData.transactions, importMode, syncToCloud && isGoogleSheetsConnected);
+      await onApplyImport(
+        parsedData.transactions,
+        importMode,
+        syncToCloud && isGoogleSheetsConnected,
+        saveAsConnectedSheet && detectedSheetMeta ? detectedSheetMeta : undefined
+      );
+
       setSuccessMsg(
-        `Successfully updated site with ${parsedData.transactions.length} transactions!`
+        `Successfully updated site with ${parsedData.transactions.length} transactions from Google Sheet!`
       );
       setTimeout(() => {
         onClose();
         setParsedData(null);
         setFileName(null);
         setSuccessMsg(null);
-      }, 1500);
+      }, 1400);
     } catch (err: any) {
       setErrorMsg(`Failed to update site: ${err.message}`);
     } finally {
@@ -209,7 +289,7 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
-      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-2xl p-6 shadow-2xl relative max-h-[90vh] flex flex-col">
+      <div className="bg-slate-900 border border-slate-700/80 rounded-2xl w-full max-w-2xl p-6 shadow-2xl relative max-h-[92vh] flex flex-col">
         {/* Close Button */}
         <button
           onClick={onClose}
@@ -225,19 +305,31 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
           </div>
           <div>
             <h2 className="text-lg font-bold text-white flex items-center gap-2">
-              <span>Upload Google Sheet / Month-End File</span>
+              <span>Google Sheet Month-End Sync</span>
               <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                Auto Sync
+                Direct Integration
               </span>
             </h2>
             <p className="text-xs text-slate-400">
-              Upload your Google Sheet (.xlsx, .csv) at month-end to instantly refresh all site metrics, charts, and activity.
+              Copy your Google Sheet link or upload the file to automatically update all site data, metrics, and activity.
             </p>
           </div>
         </div>
 
-        {/* Tabs: Upload File vs Paste Data */}
+        {/* Navigation Tabs */}
         <div className="flex items-center gap-2 border-b border-slate-800 pb-3 mb-4">
+          <button
+            type="button"
+            onClick={() => setActiveTab('link')}
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 ${
+              activeTab === 'link'
+                ? 'bg-emerald-600 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+          >
+            <Link2 className="w-3.5 h-3.5" />
+            <span>Connect by Google Sheet Link</span>
+          </button>
           <button
             type="button"
             onClick={() => setActiveTab('upload')}
@@ -260,16 +352,36 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
             }`}
           >
             <FileText className="w-3.5 h-3.5" />
-            <span>Paste Sheet Data</span>
+            <span>Paste Cells</span>
           </button>
         </div>
 
         {/* Scrollable Content Body */}
         <div className="flex-1 overflow-y-auto pr-1 space-y-4">
           {errorMsg && (
-            <div className="p-3 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0 text-rose-400" />
-              <span>{errorMsg}</span>
+            <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-300 text-xs space-y-2.5">
+              <div className="flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                <span className="leading-relaxed">{errorMsg}</span>
+              </div>
+              {onGoogleSignIn && (
+                <div className="pt-1 flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSignInAndFetch}
+                    disabled={isParsing}
+                    className="px-3 py-1.5 bg-white hover:bg-slate-100 text-slate-900 rounded-lg font-bold text-xs flex items-center gap-2 shadow-sm transition-colors cursor-pointer"
+                  >
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 48 48">
+                      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"></path>
+                      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"></path>
+                      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"></path>
+                      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"></path>
+                    </svg>
+                    <span>Sign In with Google to Access</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
@@ -280,9 +392,72 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
             </div>
           )}
 
-          {activeTab === 'upload' ? (
+          {/* TAB 1: CONNECT BY GOOGLE SHEET LINK */}
+          {activeTab === 'link' && (
+            <div className="space-y-3">
+              <div className="p-3.5 rounded-xl bg-slate-950/80 border border-slate-800 space-y-3">
+                <label className="block text-xs font-semibold text-slate-300">
+                  Google Sheet URL or Spreadsheet ID
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={sheetUrlInput}
+                      onChange={(e) => setSheetUrlInput(e.target.value)}
+                      placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5.../edit"
+                      className="w-full px-3.5 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500 font-mono"
+                    />
+                    {sheetUrlInput && (
+                      <button
+                        type="button"
+                        onClick={() => setSheetUrlInput('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs p-1"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleFetchFromLink()}
+                    disabled={isParsing || !sheetUrlInput.trim()}
+                    className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 transition-all shrink-0 shadow-md shadow-emerald-600/20 cursor-pointer"
+                  >
+                    {isParsing ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Fetching Sheet...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Fetch & Update Data</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Helpful instructions for link sharing */}
+                <div className="p-3 bg-slate-900/60 border border-slate-800/80 rounded-xl text-[11px] text-slate-400 space-y-1.5">
+                  <div className="font-semibold text-slate-300 flex items-center gap-1.5">
+                    <Info className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>How to connect your Google Sheet in 10 seconds:</span>
+                  </div>
+                  <ol className="list-decimal list-inside space-y-1 pl-1 text-slate-400">
+                    <li>Open your Google Sheet in your browser.</li>
+                    <li>Click the blue <strong className="text-slate-200">Share</strong> button at the top right.</li>
+                    <li>Under <strong className="text-slate-200">General access</strong>, select <strong className="text-emerald-300">Anyone with the link (Viewer)</strong>.</li>
+                    <li>Click <strong className="text-slate-200">Copy link</strong>, paste it above, and click <strong className="text-slate-200">Fetch & Update Data</strong>.</li>
+                  </ol>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* TAB 2: UPLOAD FILE (.xlsx, .csv) */}
+          {activeTab === 'upload' && (
             <div>
-              {/* Drag and Drop Box */}
               <div
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -312,15 +487,18 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
                   )}
                 </div>
                 <p className="text-sm font-semibold text-slate-200">
-                  {fileName ? fileName : 'Click to select or drag & drop your Google Sheet file'}
+                  {fileName ? fileName : 'Click to select or drag & drop your month-end file'}
                 </p>
                 <p className="text-xs text-slate-400 mt-1">
                   Supports Google Sheets exports: <strong className="text-slate-300">.xlsx</strong>,{' '}
-                  <strong className="text-slate-300">.csv</strong> (TEQX Finance, Transactions, Income, Expenses)
+                  <strong className="text-slate-300">.csv</strong> (Transactions, Income, Expenses tabs)
                 </p>
               </div>
             </div>
-          ) : (
+          )}
+
+          {/* TAB 3: PASTE SHEET DATA */}
+          {activeTab === 'paste' && (
             <div>
               <label className="block text-xs font-semibold text-slate-400 mb-1.5 uppercase tracking-wider">
                 Paste Sheet Rows / CSV Text
@@ -329,7 +507,7 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
                 rows={5}
                 value={pastedText}
                 onChange={(e) => setPastedText(e.target.value)}
-                placeholder="Paste copied cells from your Google Sheet or CSV here..."
+                placeholder="Paste copied cells directly from your Google Sheet or CSV here..."
                 className="w-full p-3 bg-slate-950 border border-slate-800 rounded-xl text-xs text-slate-200 font-mono focus:outline-none focus:border-emerald-500 resize-none"
               />
               <button
@@ -346,15 +524,24 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
 
           {/* Parsed Results Overview & Verification */}
           {parsedData && (
-            <div className="space-y-4 pt-2 border-t border-slate-800">
+            <div className="space-y-4 pt-3 border-t border-slate-800">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center gap-1.5">
+                <span className="text-xs font-bold text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  Sheet Parsed Successfully
+                  <span>Google Sheet Data Ready</span>
                 </span>
-                {parsedData.sheetNames.length > 0 && (
-                  <span className="text-[11px] text-slate-400">
-                    Sheets: {parsedData.sheetNames.join(', ')}
+                {detectedSheetMeta && (
+                  <span className="text-xs font-mono text-emerald-400 flex items-center gap-1">
+                    <span>{detectedSheetMeta.name}</span>
+                    <a
+                      href={detectedSheetMeta.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-slate-400 hover:text-white"
+                      title="Open in Google Sheets"
+                    >
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
                   </span>
                 )}
               </div>
@@ -388,7 +575,7 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
               {/* Preview Table */}
               <div>
                 <div className="text-xs font-semibold text-slate-400 mb-1.5">
-                  Preview Transactions (first {Math.min(parsedData.transactions.length, 5)} entries)
+                  Preview Transactions (first {Math.min(parsedData.transactions.length, 5)} rows)
                 </div>
                 <div className="overflow-x-auto border border-slate-800 rounded-xl bg-slate-950/60 max-h-44">
                   <table className="w-full text-left text-xs border-collapse">
@@ -438,7 +625,7 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
               {/* Import Settings */}
               <div className="p-3.5 bg-slate-950/80 border border-slate-800 rounded-xl space-y-3">
                 <div className="text-xs font-bold text-slate-300 uppercase tracking-wider">
-                  Update Settings
+                  Update Mode
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -459,10 +646,10 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
                     />
                     <div>
                       <div className="text-xs font-semibold text-slate-200">
-                        Replace & Refresh (Recommended)
+                        Replace & Reconcile Site (Recommended)
                       </div>
                       <div className="text-[11px] text-slate-400">
-                        Replaces the site's records with this month-end sheet for 100% accurate reconciliation.
+                        Matches the site's data 100% with the Google Sheet.
                       </div>
                     </div>
                   </label>
@@ -487,11 +674,23 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
                         Append / Merge
                       </div>
                       <div className="text-[11px] text-slate-400">
-                        Keeps existing records and appends new transactions to the database.
+                        Keeps existing records and appends new rows.
                       </div>
                     </div>
                   </label>
                 </div>
+
+                {detectedSheetMeta && (
+                  <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 pt-1">
+                    <input
+                      type="checkbox"
+                      checked={saveAsConnectedSheet}
+                      onChange={(e) => setSaveAsConnectedSheet(e.target.checked)}
+                      className="rounded border-slate-700 text-emerald-500 focus:ring-emerald-500"
+                    />
+                    <span>Keep this Google Sheet linked to the site for continuous automatic sync</span>
+                  </label>
+                )}
 
                 {isGoogleSheetsConnected && (
                   <label className="flex items-center gap-2 cursor-pointer text-xs text-slate-300 pt-1">
@@ -501,7 +700,7 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
                       onChange={(e) => setSyncToCloud(e.target.checked)}
                       className="rounded border-slate-700 text-emerald-500 focus:ring-emerald-500"
                     />
-                    <span>Also synchronize all imported rows into your connected Google Sheet</span>
+                    <span>Also write updated rows into your connected Google Cloud Sheet</span>
                   </label>
                 )}
               </div>
@@ -514,7 +713,7 @@ export const UploadSheetModal: React.FC<UploadSheetModalProps> = ({
           <button
             type="button"
             onClick={onClose}
-            className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl transition-colors"
+            className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-slate-200 bg-slate-800 hover:bg-slate-700 rounded-xl transition-colors cursor-pointer"
           >
             Cancel
           </button>

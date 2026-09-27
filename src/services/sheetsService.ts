@@ -1,5 +1,6 @@
 import { CategoriesData, Transaction, TransactionType } from '../types';
 import { DEFAULT_CATEGORIES } from '../data/mockData';
+import { parseTableRows } from '../utils/sheetParser';
 
 const SHEETS_API_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 
@@ -116,80 +117,93 @@ export const sheetsService = {
   },
 
   /**
-   * Verify and add missing required tabs
+   * Verify and add missing required tabs (safe against permission errors)
    */
   async ensureRequiredTabs(accessToken: string, spreadsheetId: string): Promise<void> {
-    const meta = await this.getSpreadsheet(accessToken, spreadsheetId);
-    const hasTransactions = meta.sheets.some((s) => s.title === 'Transactions');
-    const hasCategories = meta.sheets.some((s) => s.title === 'Categories');
+    try {
+      const meta = await this.getSpreadsheet(accessToken, spreadsheetId);
+      const hasTransactions = meta.sheets.some((s) => s.title.toLowerCase().includes('trans'));
+      const hasCategories = meta.sheets.some((s) => s.title.toLowerCase().includes('categor'));
 
-    const requests: any[] = [];
-    if (!hasTransactions) {
-      requests.push({
-        addSheet: {
-          properties: { title: 'Transactions' },
-        },
-      });
-    }
-    if (!hasCategories) {
-      requests.push({
-        addSheet: {
-          properties: { title: 'Categories' },
-        },
-      });
-    }
+      const requests: any[] = [];
+      if (!hasTransactions && meta.sheets.length === 0) {
+        requests.push({
+          addSheet: {
+            properties: { title: 'Transactions' },
+          },
+        });
+      }
+      if (!hasCategories && meta.sheets.length === 0) {
+        requests.push({
+          addSheet: {
+            properties: { title: 'Categories' },
+          },
+        });
+      }
 
-    if (requests.length > 0) {
-      await fetch(`${SHEETS_API_BASE}/${spreadsheetId}:batchUpdate`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ requests }),
-      });
-      await this.initializeHeadersAndCategories(accessToken, spreadsheetId);
+      if (requests.length > 0) {
+        await fetch(`${SHEETS_API_BASE}/${spreadsheetId}:batchUpdate`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ requests }),
+        });
+        await this.initializeHeadersAndCategories(accessToken, spreadsheetId);
+      }
+    } catch (err: any) {
+      console.warn('ensureRequiredTabs skipped or not permitted (e.g. read-only sheet):', err?.message);
     }
   },
 
   /**
-   * Read Categories from "Categories" tab:
-   * Column A is Income Categories, Column B is Expense Categories
+   * Read Categories from "Categories" tab safely
    */
   async readCategories(accessToken: string, spreadsheetId: string): Promise<CategoriesData> {
-    const res = await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/Categories!A2:B100`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    try {
+      const meta = await this.getSpreadsheet(accessToken, spreadsheetId);
+      const catSheet = meta.sheets.find((s) => s.title.toLowerCase().includes('categor'));
+      if (!catSheet) {
+        return DEFAULT_CATEGORIES;
+      }
 
-    if (!res.ok) {
-      throw new Error(`Failed to read categories (${res.status})`);
+      const res = await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/'${encodeURIComponent(catSheet.title)}'!A2:B100`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (!res.ok) {
+        return DEFAULT_CATEGORIES;
+      }
+
+      const data = await res.json();
+      const rows: string[][] = data.values || [];
+
+      const incomeCategories: string[] = [];
+      const expenseCategories: string[] = [];
+
+      rows.forEach((row) => {
+        if (row[0] && row[0].trim() !== '') {
+          const cat = row[0].trim();
+          if (!incomeCategories.includes(cat)) {
+            incomeCategories.push(cat);
+          }
+        }
+        if (row[1] && row[1].trim() !== '') {
+          const cat = row[1].trim();
+          if (!expenseCategories.includes(cat)) {
+            expenseCategories.push(cat);
+          }
+        }
+      });
+
+      return {
+        incomeCategories: incomeCategories.length > 0 ? incomeCategories : DEFAULT_CATEGORIES.incomeCategories,
+        expenseCategories: expenseCategories.length > 0 ? expenseCategories : DEFAULT_CATEGORIES.expenseCategories,
+      };
+    } catch {
+      return DEFAULT_CATEGORIES;
     }
-
-    const data = await res.json();
-    const rows: string[][] = data.values || [];
-
-    const incomeCategories: string[] = [];
-    const expenseCategories: string[] = [];
-
-    rows.forEach((row) => {
-      if (row[0] && row[0].trim() !== '') {
-        const cat = row[0].trim();
-        if (!incomeCategories.includes(cat)) {
-          incomeCategories.push(cat);
-        }
-      }
-      if (row[1] && row[1].trim() !== '') {
-        const cat = row[1].trim();
-        if (!expenseCategories.includes(cat)) {
-          expenseCategories.push(cat);
-        }
-      }
-    });
-
-    return {
-      incomeCategories: incomeCategories.length > 0 ? incomeCategories : DEFAULT_CATEGORIES.incomeCategories,
-      expenseCategories: expenseCategories.length > 0 ? expenseCategories : DEFAULT_CATEGORIES.expenseCategories,
-    };
   },
 
   /**
@@ -236,50 +250,79 @@ export const sheetsService = {
   },
 
   /**
-   * Read transactions from "Transactions" tab:
-   * Columns: Date (A), Type (B), Category (C), Amount (D), Description (E), Pay By (F), Pay from : (G)
+   * Read transactions from all relevant sheet tabs (Transactions, Income, Expenses, Monthly tabs)
    */
-  async readTransactions(accessToken: string, spreadsheetId: string): Promise<Transaction[]> {
-    const res = await fetch(`${SHEETS_API_BASE}/${spreadsheetId}/values/Transactions!A2:G2000`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+  async readTransactions(accessToken: string, spreadsheetId: string, sheetTitle?: string): Promise<Transaction[]> {
+    const meta = await this.getSpreadsheet(accessToken, spreadsheetId);
 
-    if (!res.ok) {
-      throw new Error(`Failed to read transactions (${res.status})`);
+    let tabsToRead: { title: string; defaultType: TransactionType | null }[] = [];
+
+    if (sheetTitle) {
+      tabsToRead = [{ title: sheetTitle, defaultType: null }];
+    } else {
+      // Find candidate data sheets, excluding non-transaction tabs
+      const candidateSheets = meta.sheets.filter((s) => {
+        const lower = s.title.toLowerCase().trim();
+        return (
+          !lower.includes('categor') &&
+          !lower.includes('dashboard') &&
+          !lower.includes('summary') &&
+          !lower.includes('setting') &&
+          !lower.includes('config') &&
+          !lower.includes('readme')
+        );
+      });
+
+      // If there is an explicit "Transactions" tab, prioritize it
+      const transTab = candidateSheets.find((s) => s.title.toLowerCase() === 'transactions');
+      if (transTab) {
+        tabsToRead = [{ title: transTab.title, defaultType: null }];
+      } else if (candidateSheets.length > 0) {
+        // Read candidate sheets (e.g. Income + Expenses, or Monthly sheets)
+        tabsToRead = candidateSheets.map((s) => {
+          const lower = s.title.toLowerCase();
+          let defaultType: TransactionType | null = null;
+          if (lower.includes('income') || lower.includes('receipt') || lower.includes('credit')) {
+            defaultType = 'Income';
+          } else if (lower.includes('expense') || lower.includes('debit') || lower.includes('spend')) {
+            defaultType = 'Expense';
+          }
+          return { title: s.title, defaultType };
+        });
+      } else if (meta.sheets.length > 0) {
+        tabsToRead = [{ title: meta.sheets[0].title, defaultType: null }];
+      }
     }
 
-    const data = await res.json();
-    const rows: any[][] = data.values || [];
+    const allTransactions: Transaction[] = [];
 
-    const transactions: Transaction[] = [];
-
-    rows.forEach((row, idx) => {
-      const date = row[0] || '';
-      const type = (row[1] || 'Expense') as TransactionType;
-      // Category column is cleared / kept empty as requested
-      const category = '';
-      const rawAmount = typeof row[3] === 'string' ? row[3].replace(/[₹$,\s]/g, '').replace(/Rs\.?/gi, '') : row[3];
-      const amount = parseFloat(rawAmount) || 0;
-      const description = row[4] || '';
-      const payBy = row[5] || '';
-      const payFrom = row[6] || '';
-
-      if (date || amount > 0 || description || payBy || payFrom) {
-        transactions.push({
-          id: `row-${idx + 2}-${Date.now()}`,
-          date,
-          type: type === 'Income' ? 'Income' : 'Expense',
-          category,
-          amount,
-          description,
-          payBy,
-          payFrom,
-          rowIndex: idx + 2, // 1-based index (row 1 is header)
-        });
+    for (const tab of tabsToRead) {
+      try {
+        const res = await fetch(
+          `${SHEETS_API_BASE}/${spreadsheetId}/values/'${encodeURIComponent(tab.title)}'!A1:Z3500`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          const rows: any[][] = data.values || [];
+          if (rows.length > 0) {
+            const parsed = parseTableRows(rows, tab.defaultType, tab.title);
+            allTransactions.push(...parsed);
+          }
+        }
+      } catch (err) {
+        console.warn(`Could not read tab ${tab.title}:`, err);
       }
-    });
+    }
 
-    return transactions;
+    // Sort by date descending (newest first)
+    allTransactions.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+    // Re-index cleanly
+    return allTransactions.map((tx, idx) => ({
+      ...tx,
+      rowIndex: idx + 2,
+    }));
   },
 
   /**
@@ -301,8 +344,7 @@ export const sheetsService = {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          // Notice: 3rd element (Category column) is explicitly empty string ""
-          values: [[tx.date, tx.type, '', tx.amount, tx.description, tx.payBy || 'Cash', tx.payFrom || 'Self']],
+          values: [[tx.date, tx.type, tx.category || '', tx.amount, tx.description, tx.payBy || 'Cash', tx.payFrom || 'Self']],
         }),
       }
     );
